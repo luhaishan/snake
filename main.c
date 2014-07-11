@@ -6,11 +6,14 @@
 #include <stdio.h>
 #include <curses.h>
 #include <termios.h>
+#include <signal.h>
+#include <sys/time.h>
+#include <fcntl.h>
 
-#define LEFT 0
+#define LEFT  -1
 #define RIGHT 1
 #define UP 2
-#define DOWN 3
+#define DOWN -2
 
 #define STATE_INIT 0
 #define STATE_STARTED 1
@@ -18,10 +21,12 @@
 
 #define WIDTH 80
 #define HEIGHT 40
- 
-int orientation; //the direction of snake
-int gameStatus;
-static struct termios initial_settings, new_settings; 
+
+int orientation = RIGHT; /* the direction of snake */
+int gameStatus = STATE_INIT;
+int delay = 200; /* how long to wait */
+
+static struct termios initial_settings, new_settings;
 
 typedef struct {
 	int x;
@@ -41,8 +46,12 @@ void drawHorBtmLine(int x, int y, int width); //draw the bottom horizon line
 void drawLeftVerLine(int x, int y, int height); //draw the left vertical line
 void drawRightVerLine(int x, int y, int height); //draw the right vertical line
 
-void doRefresh();
-void waitForUserInput();
+void refreshSnake(); /* when time up, refresh snake*/
+void doRefresh(); /* when time is up, do the fresh work */
+
+bool isCollapse(); /* whether snake hit the wall */
+
+int set_ticker(int n_msecs);
 
 void initSnake();
 void drawSnake();
@@ -50,55 +59,42 @@ void drawWelcomeMsg();
 void drawPlayground();
 void initGame();
 
-void runGame();
-void saveGame();
-
-int main(int argc, char* argv[]) 
+int main(int argc, char* argv[])
 {
+	void onInput(int);
+	void enable_kbd_signals();
     printf("This is a snake game!\n");
 	initGame();
-	//runGame();
-	saveGame();
+	int inputChar;
+	while(1){
+		inputChar = getch();
+		if(inputChar == 32)
+			break;
+	}
+	gameStatus = STATE_STARTED;
+	initSnake();
+	
+	signal(SIGALRM, doRefresh);
+	set_ticker(delay);
+	signal(SIGIO, onInput);
+	enable_kbd_signals();
+
+		
+	while(gameStatus != STATE_GAMEOVER){
+		;
+	}
+	endwin();
     return 0;
 }
 
 void initGame()
 {
 	printf("Init the Game.\n");
-	//printf("-- Drawing a User Interface.\n");
-	int inputChar;
 	initscr();
 	noecho();
 	curs_set(0);
 	drawPlayground();
     drawWelcomeMsg();
-
-	printf("-- There's a handler to handle user input\n");
-	while (1) {
-		inputChar = getch();
-		if (inputChar == 'q') 
-			break;
-		if (inputChar == 32)
-			runGame(); 
-	}
-    endwin();
-
-}
-
-void runGame()
-{
-	initSnake();
-	doRefresh();
-	//printf("The Game is running...\n");
-	//printf("-- A Handler to handle User input.\n");
-	//printf("-- Arrow Key to control the snake.\n");
-	//printf("-- q to exit the Game.\n");
-}
-
-void saveGame()
-{
-	//printf("The Game is exiting, do some save stuff.\n");
-	//printf("-- At the very beginning , we may save nothing.\n");
 }
 
 void drawPlayground()
@@ -139,6 +135,17 @@ void drawLeftVerLine(int x, int y, int height)
     }
 }
 
+bool isCollapsed()
+{
+	int x = snake.head.x;
+	int y = snake.head.y;
+
+	if ( x <=0 || x>= HEIGHT-1 || y <=0 || y >= WIDTH-1 )
+		return true;
+	else
+		return false;
+}
+
 void drawRightVerLine(int x, int y , int height)
 {
     int i = 0;
@@ -151,26 +158,32 @@ void drawRightVerLine(int x, int y , int height)
 
 void drawWelcomeMsg()
 {
-	move(5, 30);
+	move(5, 25);
 	printw("Press space to start!");
 }
 
 void doRefresh()
 {
 	clear();
+	refreshSnake();
+	bool b = isCollapsed();
+	if(b){
+		kill(getpid(), SIGINT);
+	}
 	drawPlayground();
 	drawSnake();
 	refresh();
 }
 
 
+/* snake tail always at the end of body array*/
 void initSnake()
 {
 	int i;
 	snake.head.x = 4;
 	snake.head.y = 20;
 	snake.bodyLength = 3;
-	
+
 	for (i = 0; i < snake.bodyLength; i++) {
 		snake.body[i].x = snake.head.x;
 		snake.body[i].y =  snake.head.y - i - 1;
@@ -194,3 +207,90 @@ void drawSnake()
 		printw("O");
 	}
 }
+
+void refreshSnake()
+{
+	postion originalHead = snake.head;
+	int i = 0;
+	switch(orientation){
+	case LEFT:
+		snake.head.y -= 1; 
+		break;
+	case RIGHT:
+		snake.head.y += 1;
+		break;
+	case UP:
+		snake.head.x -= 1;
+		break;
+	case DOWN:
+		snake.head.x += 1;
+		move(0, 0);
+		printw("hello");
+		break;
+	default:
+		break;
+	}
+
+	for (i = snake.bodyLength -1; i > 0; i--)
+		snake.body[i] = snake.body[i-1];
+
+	snake.body[0] = originalHead;
+}
+
+int set_ticker(int n_msecs)
+{
+	struct itimerval new_timeset;
+	long n_sec,n_usecs;
+
+	n_sec = n_msecs/1000;
+	n_usecs = (n_msecs%1000)*1000L;
+
+	new_timeset.it_interval.tv_sec=n_sec;
+	new_timeset.it_interval.tv_usec=n_usecs;
+
+	new_timeset.it_value.tv_sec = n_sec;
+	new_timeset.it_value.tv_usec= n_usecs;
+
+	return setitimer(ITIMER_REAL,&new_timeset,NULL);
+}
+
+void onInput(int signum)
+{
+	int c = getch();
+	int originalDir = orientation;
+	if(c == 'w') 
+	{
+		orientation = UP;
+		originalDir + orientation == 0 ? (orientation = originalDir) : (orientation = UP);
+	}
+	if(c == 's')
+	{
+		orientation = DOWN;
+		originalDir + orientation == 0 ? (orientation = originalDir) : (orientation = DOWN);
+	}
+	if(c == 'a')
+	{
+		orientation = LEFT;
+		originalDir + orientation == 0 ? (orientation = originalDir) : (orientation = LEFT);
+	}
+	if(c == 'd')
+	{
+		orientation = RIGHT;
+		originalDir + orientation == 0 ? (orientation = originalDir) : (orientation = RIGHT);
+	}
+	if(c == 'q')
+	{
+		/* here we want to quit the game */
+		kill(getpid(), SIGINT);
+	}
+}
+
+void enable_kbd_signals()
+{
+	int fd_flags;
+
+	fcntl(0, F_SETOWN, getpid());
+	fd_flags = fcntl(0, F_GETFL);
+	fcntl(0, F_SETFL, (fd_flags | O_ASYNC));
+}
+
